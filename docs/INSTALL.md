@@ -28,7 +28,7 @@ The script:
 3. Downloads the latest `AeroHUD.spoon` release into `~/.hammerspoon/Spoons/`.
 4. Adds AeroHUD to `~/.hammerspoon/init.lua` and reloads Hammerspoon.
 5. Finds your AeroSpace config (`~/.aerospace.toml` or `~/.config/aerospace/aerospace.toml`) and adds the HUD to `exec-on-workspace-change`. If you already have a command there, such as a SketchyBar trigger, the HUD is chained after it rather than replacing it.
-6. Routes your `move-node-to-workspace` key bindings through AeroHUD so moving a window animates on the HUD (see [Animating window moves](#animating-window-moves)).
+6. Routes your `move-node-to-workspace` key bindings through AeroHUD so moving a window animates on the HUD (see [Animating window moves](CONFIGURATION.md#animating-window-moves)).
 7. Runs `aerospace reload-config`. If AeroSpace rejects the new config, the change is rolled back.
 
 Steps that are already done are skipped, and every file the script changes is backed up first to `<file>.aerohud.bak`.
@@ -57,27 +57,4 @@ From a clone, the Spoon is linked into `~/.hammerspoon/Spoons/` instead of downl
 2. Add the contents of [`examples/init.lua`](../examples/init.lua) to `~/.hammerspoon/init.lua`, and run `hs.ipc.cliInstall()` once in the Hammerspoon console if you don't have the `hs` command. Reload Hammerspoon.
 3. Add the callback from [`examples/aerospace.toml`](../examples/aerospace.toml) to your AeroSpace config and run `aerospace reload-config`.
 
-## Animating window moves
-
-AeroSpace runs a callback when you switch workspaces, but not when you move a window. To animate moves, AeroHUD does the move itself: the installer changes simple bindings like
-
-```toml
-alt-shift-1 = 'move-node-to-workspace 1'
-```
-
-to
-
-```toml
-alt-shift-1 = "exec-and-forget /opt/homebrew/bin/hs -c 'spoon.AeroHUD:moveWindow(\"1\")' || /opt/homebrew/bin/aerospace move-node-to-workspace 1"
-```
-
-AeroHUD moves the focused window and flies its icon to the new workspace on the HUD. If Hammerspoon isn't running, the `||` falls back to a plain move, so the binding always works. Bindings with extra flags, or `next`/`prev`, are left as they are.
-
-## Configuration
-
-| Option | Default | Values |
-|---|---|---|
-| `position` | `"bottom"` | `"bottom"`, `"center"`, `"top"` |
-| `duration` | `0.8` | seconds fully visible |
-| `showAppIcons` | `true` | |
-| `theme` | `"auto"` | `"auto"`, `"dark"`, `"light"` |
+To change how the HUD looks and behaves, see [CONFIGURATION.md](CONFIGURATION.md).

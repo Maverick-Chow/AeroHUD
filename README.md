@@ -12,7 +12,7 @@ Requires [AeroSpace](https://github.com/nikitabobko/AeroSpace) and [Hammerspoon]
 curl -fsSL https://github.com/Maverick-Chow/AeroHUD/releases/latest/download/install.sh | bash
 ```
 
-See [docs/INSTALL.md](docs/INSTALL.md) for what the script does, other ways to install, and configuration.
+See [docs/INSTALL.md](docs/INSTALL.md) for what the script does and other ways to install, and [docs/CONFIGURATION.md](docs/CONFIGURATION.md) to customize the HUD.
 
 ## License
 

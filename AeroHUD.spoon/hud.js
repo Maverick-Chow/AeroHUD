@@ -5,6 +5,8 @@
   const FLIGHT_MS = 520;
   let outTimer = null;
   let flightTimer = null;
+  let flight = null;     // the running icon animation, if any
+  let generation = 0;    // bumped by every show/move so stale callbacks do nothing
   let lastActiveLeft = null;
 
   function restart(el, cls) {
@@ -129,13 +131,22 @@
       { transform: `translate(${dx / 2}px, ${dy / 2 - 26}px) scale(1.25)`, offset: 0.45 },
       { transform: `translate(${dx}px, ${dy}px) scale(0.8)` },
     ], { duration: FLIGHT_MS, easing: "cubic-bezier(0.45, 0, 0.2, 1)" });
-    anim.onfinish = () => { clone.remove(); done(); };
+    flight = anim;
+    anim.onfinish = () => { clone.remove(); flight = null; done(); };
+    anim.oncancel = () => clone.remove();
+  }
+
+  // Stop any move animation in progress. Returns the new generation number.
+  function interrupt() {
+    clearTimeout(flightTimer);
+    if (flight) { flight.cancel(); flight = null; }
+    document.querySelectorAll(".flying").forEach(el => el.remove());
+    return ++generation;
   }
 
   window.hud = {
     show(data) {
-      clearTimeout(flightTimer);
-      document.querySelectorAll(".flying").forEach(el => el.remove());
+      interrupt();
       renderTiles(data);
       popIn(data.theme);
       scheduleOut(data.duration * 1000);
@@ -143,8 +154,7 @@
 
     // A window moved: show the old layout, fly the icon, then show the new one.
     move(data) {
-      clearTimeout(flightTimer);
-      document.querySelectorAll(".flying").forEach(el => el.remove());
+      const gen = interrupt();
       const wasVisible = hud.classList.contains("in");
       const before = { ...data.before, showAppIcons: data.showAppIcons };
       const after = { ...data.after, showAppIcons: data.showAppIcons };
@@ -154,6 +164,7 @@
       // Let the HUD finish springing in before the icon takes off.
       flightTimer = setTimeout(() => {
         fly(data.moved, before, () => {
+          if (gen !== generation) return; // a newer show/move took over
           renderTiles(after, false, data.moved.to);
           scheduleOut(data.duration * 1000);
         });

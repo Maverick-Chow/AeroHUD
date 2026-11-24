@@ -8,7 +8,7 @@ local obj = {}
 obj.__index = obj
 
 obj.name = "AeroHUD"
-obj.version = "0.2.0"
+obj.version = "0.2.1"
 obj.author = "Maverick Chow"
 obj.homepage = "https://github.com/Maverick-Chow/AeroHUD"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
@@ -109,7 +109,9 @@ end
 -- until the AX timeout fires.
 local WINDOW_FORMAT = "'%{window-id}|%{workspace}|%{app-bundle-id}|%{app-name}'"
 
-function obj:_query(callback)
+-- slot names the caller: a new query cancels a still-running one in the same
+-- slot (only the latest switch matters), but never one in another slot.
+function obj:_query(slot, callback)
   local a = q(self.aerospacePath)
   local script = table.concat({
     a .. " list-workspaces --all",
@@ -118,13 +120,28 @@ function obj:_query(callback)
     "echo " .. SEP,
     a .. " list-windows --focused --format " .. WINDOW_FORMAT .. " 2>/dev/null",
   }, "; ")
-  if self.task and self.task:isRunning() then self.task:terminate() end
-  self.task = hs.task.new("/bin/sh", function(_, stdout)
+  self.tasks = self.tasks or {}
+  local old = self.tasks[slot]
+  if old and old:isRunning() then old:terminate() end
+  self.tasks[slot] = hs.task.new("/bin/sh", function(_, stdout)
+    self.tasks[slot] = nil
     local parts = {}
     for part in ((stdout or "") .. SEP):gmatch("(.-)" .. SEP) do parts[#parts + 1] = part end
     callback(lines(parts[1] or ""), self:_parseWindows(parts[2] or ""), self:_parseWindows(parts[3] or "")[1])
   end, { "-c", script })
-  self.task:start()
+  self.tasks[slot]:start()
+end
+
+-- Every show/move gets a sequence number when it is called, so results that
+-- come back out of order can't put the highlight on a stale workspace.
+function obj:_nextSeq()
+  self.seq = (self.seq or 0) + 1
+  return self.seq
+end
+
+function obj:_setFocus(ws, seq)
+  if not self.focus or self.focus.seq < seq then self.focus = { ws = ws, seq = seq } end
+  return self.focus.ws
 end
 
 function obj:_parseWindows(out)
@@ -192,7 +209,8 @@ end
 --- Show the HUD for a workspace switch. Called from AeroSpace's callback.
 function obj:show(ws, prev)
   if not self.webview then self:start() end
-  self:_query(function(names, windows)
+  self:_setFocus(ws, self:_nextSeq())
+  self:_query("show", function(names, windows)
     local data = self:_workspaceData(ws, names, windows)
     data.previous = prev
     self:_present("show", data)
@@ -207,10 +225,15 @@ end
 function obj:moveWindow(target)
   if not self.webview then self:start() end
   target = tostring(target)
-  self:_query(function(names, windows, focused)
+  local seq = self:_nextSeq()
+  -- Each move gets its own slot so a quick workspace switch can't cancel it.
+  self:_query("move" .. seq, function(names, windows, focused)
     if not focused or focused.workspace == target then return end
+    self:_setFocus(focused.workspace, seq)
 
-    self.moveTask = hs.task.new(self.aerospacePath, function(code)
+    self.moveTasks = self.moveTasks or {}
+    self.moveTasks[seq] = hs.task.new(self.aerospacePath, function(code)
+      self.moveTasks[seq] = nil
       if code ~= 0 then return end
 
       local after, hasTarget = {}, false
@@ -225,14 +248,17 @@ function obj:moveWindow(target)
         afterNames[#afterNames + 1] = target
       end
 
+      -- If you switched workspaces since pressing the key, keep the highlight
+      -- on the workspace you are on now.
+      local current = self.focus.ws
       local data = {
-        before = self:_workspaceData(focused.workspace, afterNames, windows),
-        after = self:_workspaceData(focused.workspace, afterNames, after),
+        before = self:_workspaceData(current, afterNames, windows),
+        after = self:_workspaceData(current, afterNames, after),
         moved = { bundle = focused.bundle, from = focused.workspace, to = target },
       }
       self:_present("move", data, 0.7)
     end, { "move-node-to-workspace", "--window-id", focused.id, target })
-    self.moveTask:start()
+    self.moveTasks[seq]:start()
   end)
 end
 
