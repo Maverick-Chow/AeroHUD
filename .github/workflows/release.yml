@@ -1,0 +1,33 @@
+# Push a tag like v0.2.0 to publish a release. The tag must match obj.version
+# in AeroHUD.spoon/init.lua. The release gets AeroHUD.spoon.zip and install.sh,
+# which is what the curl one-liner in the README downloads.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the Spoon version
+        run: |
+          version="$(sed -n 's/^obj\.version = "\(.*\)"/\1/p' AeroHUD.spoon/init.lua)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match obj.version ($version) in AeroHUD.spoon/init.lua"
+            exit 1
+          fi
+
+      - name: Build AeroHUD.spoon.zip
+        run: zip -r -X AeroHUD.spoon.zip AeroHUD.spoon -x '*.DS_Store'
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" AeroHUD.spoon.zip install.sh --title "AeroHUD $GITHUB_REF_NAME" --generate-notes

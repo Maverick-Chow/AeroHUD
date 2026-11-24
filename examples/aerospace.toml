@@ -1,0 +1,4 @@
+# Add this to ~/.aerospace.toml, then run `aerospace reload-config`.
+exec-on-workspace-change = ['/bin/bash', '-c',
+  '/opt/homebrew/bin/hs -c "spoon.AeroHUD:show(\"$AEROSPACE_FOCUSED_WORKSPACE\", \"$AEROSPACE_PREV_WORKSPACE\")"'
+]
