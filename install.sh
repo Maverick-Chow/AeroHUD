@@ -23,6 +23,8 @@ Usage:
 Options:
   --copy        from a clone: copy the Spoon instead of symlinking it to the repo
   --no-reload   only edit files; don't restart Hammerspoon or reload AeroSpace
+  --no-bindings leave your move-node-to-workspace key bindings alone (no HUD
+                animation when moving windows)
 
 Environment:
   AEROHUD_VERSION   release tag to install, e.g. v0.1.0 (default: latest)
@@ -61,19 +63,15 @@ hs_run() { with_timeout 5 "$HS_BIN" -t 3 -c "$1"; }
 
 hs_running() { pgrep -xq Hammerspoon; }
 
-# Restart Hammerspoon so it re-reads init.lua.
+# Restart Hammerspoon so it re-reads init.lua. Quit and relaunch rather than
+# calling hs.reload() over IPC: reloading while the hs request is still being
+# handled floods the console with "already recursing" warnings and can hang hs.
 restart_hammerspoon() {
-  if [ -n "${HS_BIN:-}" ] && hs_running && hs_run 'return true'; then
-    # hs.reload() drops the IPC connection, so schedule it instead of calling it.
-    hs_run 'hs.timer.doAfter(0.1, hs.reload)' || true
-    sleep 0.5
-  else
-    if hs_running; then
-      osascript -e 'quit app "Hammerspoon"' >/dev/null 2>&1 || true
-      for _ in $(seq 20); do hs_running || break; sleep 0.25; done
-    fi
-    open -g -a Hammerspoon
+  if hs_running; then
+    osascript -e 'quit app "Hammerspoon"' >/dev/null 2>&1 || true
+    for _ in $(seq 20); do hs_running || break; sleep 0.25; done
   fi
+  open -g -a Hammerspoon
 }
 
 # Wait until Hammerspoon answers over IPC with the Spoon loaded.
@@ -251,15 +249,19 @@ configure_aerospace() {
   fi
   info "Config: $TOML"
 
-  local hs_cmd status
+  local hs_cmd status count
   hs_cmd="$HS_BIN"' -c "spoon.AeroHUD:show(\"$AEROSPACE_FOCUSED_WORKSPACE\", \"$AEROSPACE_PREV_WORKSPACE\")"'
 
-  if grep -q 'AeroHUD' "$TOML"; then
+  # Keep the config as it was before this run, to roll back to if AeroSpace
+  # rejects our changes.
+  ROLLBACK="$(mktemp)"
+  cp "$TOML" "$ROLLBACK"
+  CHANGED=0
+
+  if grep -q 'AeroHUD:show' "$TOML"; then
     ok "AeroHUD callback already present"
   else
     backup "$TOML"
-    ROLLBACK="$(mktemp)"
-    cp "$TOML" "$ROLLBACK"
     set +e
     HS_CMD="$hs_cmd" perl -0777 -e '
       my $hs = $ENV{HS_CMD};
@@ -293,6 +295,7 @@ configure_aerospace() {
     set -e
     if [ "$status" = 0 ]; then
       mv "$TOML.tmp" "$TOML"
+      CHANGED=1
       ok "Added the AeroHUD callback to exec-on-workspace-change"
     else
       rm -f "$TOML.tmp"
@@ -302,13 +305,33 @@ configure_aerospace() {
     fi
   fi
 
+  # AeroSpace has no callback for window moves, so route simple bindings like
+  #   alt-shift-1 = 'move-node-to-workspace 1'
+  # through AeroHUD, which moves the window itself and animates it. If
+  # Hammerspoon isn't running, hs fails and the plain move runs instead.
+  if [ "$BINDINGS" = 1 ]; then
+    export AEROHUD_HS="$HS_BIN" AEROHUD_AEROSPACE="$AEROSPACE_BIN"
+    export AEROHUD_MOVE_RE='^([ \t]*[A-Za-z0-9-]+[ \t]*=[ \t]*)(['"'"'"])move-node-to-workspace[ \t]+(?!(?:next|prev)\2)([A-Za-z0-9_.-]+)\2([ \t]*(?:#.*)?)$'
+    count="$(perl -ne '$n++ if /$ENV{AEROHUD_MOVE_RE}/; END { print $n + 0 }' "$TOML")"
+    if [ "$count" -gt 0 ]; then
+      backup "$TOML"
+      perl -pi -e 's{$ENV{AEROHUD_MOVE_RE}}{$1 . qq{"exec-and-forget $ENV{AEROHUD_HS} -c \x27spoon.AeroHUD:moveWindow(\\"$3\\")\x27 || $ENV{AEROHUD_AEROSPACE} move-node-to-workspace $3"} . $4}e' "$TOML"
+      CHANGED=1
+      ok "Routed $count move-node-to-workspace key bindings through AeroHUD"
+    elif grep -q 'AeroHUD:moveWindow' "$TOML"; then
+      ok "Move key bindings already use AeroHUD"
+    else
+      info "No simple move-node-to-workspace bindings found; see docs/INSTALL.md to animate window moves"
+    fi
+  fi
+
   [ "$RELOAD" = 1 ] || return 0
 
   pgrep -xq AeroSpace || { info "Starting AeroSpace"; open -a AeroSpace; sleep 2; }
   if with_timeout 10 "$AEROSPACE_BIN" reload-config; then
     ok "Reloaded AeroSpace config"
   else
-    if [ -n "${ROLLBACK:-}" ]; then
+    if [ "$CHANGED" = 1 ]; then
       cp "$ROLLBACK" "$TOML"
       with_timeout 10 "$AEROSPACE_BIN" reload-config || true
       die "AeroSpace didn't accept the new config, so it was rolled back. Run 'aerospace reload-config' to see the error."
@@ -320,10 +343,12 @@ configure_aerospace() {
 main() {
   COPY=0
   RELOAD=1
+  BINDINGS=1
   for arg in "$@"; do
     case "$arg" in
       --copy) COPY=1 ;;
       --no-reload) RELOAD=0 ;;
+      --no-bindings) BINDINGS=0 ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unknown option: $arg" >&2; usage >&2; exit 2 ;;
     esac

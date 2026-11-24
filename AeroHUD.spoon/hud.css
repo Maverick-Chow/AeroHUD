@@ -187,3 +187,21 @@ body {
   transition: left 380ms var(--spring);
 }
 
+
+/* The icon in flight during a window move, and the tile it lands on. */
+.flying {
+  position: fixed;
+  z-index: 10;
+  pointer-events: none;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.35));
+}
+
+.tile.landed .tile-icons {
+  animation: land 420ms var(--spring);
+}
+
+@keyframes land {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}

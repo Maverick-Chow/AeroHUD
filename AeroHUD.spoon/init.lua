@@ -8,7 +8,7 @@ local obj = {}
 obj.__index = obj
 
 obj.name = "AeroHUD"
-obj.version = "0.1.0"
+obj.version = "0.2.0"
 obj.author = "Maverick Chow"
 obj.homepage = "https://github.com/Maverick-Chow/AeroHUD"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
@@ -107,20 +107,33 @@ end
 -- Hammerspoon's main thread: the aerospace server queries every app over
 -- Accessibility (Hammerspoon included), so a synchronous hs.execute deadlocks
 -- until the AX timeout fires.
+local WINDOW_FORMAT = "'%{window-id}|%{workspace}|%{app-bundle-id}|%{app-name}'"
+
 function obj:_query(callback)
   local a = q(self.aerospacePath)
   local script = table.concat({
     a .. " list-workspaces --all",
     "echo " .. SEP,
-    a .. " list-windows --all --format '%{workspace}|%{app-bundle-id}|%{app-name}'",
+    a .. " list-windows --all --format " .. WINDOW_FORMAT,
+    "echo " .. SEP,
+    a .. " list-windows --focused --format " .. WINDOW_FORMAT .. " 2>/dev/null",
   }, "; ")
   if self.task and self.task:isRunning() then self.task:terminate() end
   self.task = hs.task.new("/bin/sh", function(_, stdout)
     local parts = {}
     for part in ((stdout or "") .. SEP):gmatch("(.-)" .. SEP) do parts[#parts + 1] = part end
-    callback(parts[1] or "", parts[2] or "")
+    callback(lines(parts[1] or ""), self:_parseWindows(parts[2] or ""), self:_parseWindows(parts[3] or "")[1])
   end, { "-c", script })
   self.task:start()
+end
+
+function obj:_parseWindows(out)
+  local windows = {}
+  for _, line in ipairs(lines(out)) do
+    local id, ws, bundle, name = line:match("^(.-)|(.-)|(.-)|(.*)$")
+    if id then windows[#windows + 1] = { id = id, workspace = ws, bundle = bundle, name = name } end
+  end
+  return windows
 end
 
 -- Encoding an icon as a PNG data URL is the slow part, so do it once per app.
@@ -133,36 +146,45 @@ function obj:_icon(bundle)
   return self.iconCache[bundle] or nil
 end
 
-function obj:_workspaceData(ws, prev, allOut, windowsOut)
+function obj:_workspaceData(ws, names, windows)
   -- Unique apps per workspace, in window order.
   local appsByWs, seen, icons = {}, {}, {}
-  for _, line in ipairs(lines(windowsOut)) do
-    local w, bundle, name = line:match("^(.-)|(.-)|(.*)$")
-    if w then
-      appsByWs[w] = appsByWs[w] or {}
-      seen[w] = seen[w] or {}
-      if bundle ~= "" and not seen[w][bundle] then
-        seen[w][bundle] = true
-        table.insert(appsByWs[w], { bundle = bundle, name = name })
-        if self.opts.showAppIcons and icons[bundle] == nil then
-          icons[bundle] = self:_icon(bundle) or false
-        end
+  for _, w in ipairs(windows) do
+    appsByWs[w.workspace] = appsByWs[w.workspace] or {}
+    seen[w.workspace] = seen[w.workspace] or {}
+    if w.bundle ~= "" and not seen[w.workspace][w.bundle] then
+      seen[w.workspace][w.bundle] = true
+      table.insert(appsByWs[w.workspace], { bundle = w.bundle, name = w.name })
+      if self.opts.showAppIcons and icons[w.bundle] == nil then
+        icons[w.bundle] = self:_icon(w.bundle) or false
       end
     end
   end
 
   local workspaces = {}
-  for _, name in ipairs(lines(allOut)) do
+  for _, name in ipairs(names) do
     local apps = appsByWs[name] or {}
     workspaces[#workspaces + 1] = { name = name, occupied = #apps > 0, apps = apps }
   end
 
-  return {
-    workspace = ws,
-    previous = prev,
-    workspaces = workspaces,
-    icons = icons,
-  }
+  return { workspace = ws, workspaces = workspaces, icons = icons }
+end
+
+-- Show the webview and hand the data to window.hud[method] in the page.
+function obj:_present(method, data, extraTime)
+  data.theme = self.opts.theme
+  data.duration = self.opts.duration
+  data.showAppIcons = self.opts.showAppIcons
+
+  local wv = self.webview
+  local count = #(data.workspaces or data.after.workspaces)
+  wv:frame(self:_frame(hs.screen.mainScreen(), count))
+  wv:show()
+  wv:evaluateJavaScript("window.hud && window.hud." .. method .. "(" .. hs.json.encode(data) .. ")")
+
+  -- Hide the window after the exit animation so it never blocks clicks.
+  if self.hideTimer then self.hideTimer:stop() end
+  self.hideTimer = hs.timer.doAfter(self.opts.duration + 0.6 + (extraTime or 0), function() wv:hide() end)
 end
 
 --- AeroHUD:show(workspace, previous)
@@ -170,20 +192,47 @@ end
 --- Show the HUD for a workspace switch. Called from AeroSpace's callback.
 function obj:show(ws, prev)
   if not self.webview then self:start() end
-  self:_query(function(allOut, windowsOut)
-    local data = self:_workspaceData(ws, prev, allOut, windowsOut)
-    data.theme = self.opts.theme
-    data.duration = self.opts.duration
-    data.showAppIcons = self.opts.showAppIcons
+  self:_query(function(names, windows)
+    local data = self:_workspaceData(ws, names, windows)
+    data.previous = prev
+    self:_present("show", data)
+  end)
+end
 
-    local wv = self.webview
-    wv:frame(self:_frame(hs.screen.mainScreen(), #data.workspaces))
-    wv:show()
-    wv:evaluateJavaScript("window.hud && window.hud.show(" .. hs.json.encode(data) .. ")")
+--- AeroHUD:moveWindow(workspace)
+--- Method
+--- Move the focused window to a workspace and animate it on the HUD. Bind it in
+--- place of AeroSpace's `move-node-to-workspace` (see docs/INSTALL.md), since
+--- AeroSpace has no callback for window moves.
+function obj:moveWindow(target)
+  if not self.webview then self:start() end
+  target = tostring(target)
+  self:_query(function(names, windows, focused)
+    if not focused or focused.workspace == target then return end
 
-    -- Hide the window after the exit animation so it never blocks clicks.
-    if self.hideTimer then self.hideTimer:stop() end
-    self.hideTimer = hs.timer.doAfter(self.opts.duration + 0.6, function() wv:hide() end)
+    self.moveTask = hs.task.new(self.aerospacePath, function(code)
+      if code ~= 0 then return end
+
+      local after, hasTarget = {}, false
+      for _, w in ipairs(windows) do
+        after[#after + 1] = w.id == focused.id
+          and { id = w.id, workspace = target, bundle = w.bundle, name = w.name } or w
+      end
+      for _, name in ipairs(names) do hasTarget = hasTarget or name == target end
+      local afterNames = names
+      if not hasTarget then
+        afterNames = { table.unpack(names) }
+        afterNames[#afterNames + 1] = target
+      end
+
+      local data = {
+        before = self:_workspaceData(focused.workspace, afterNames, windows),
+        after = self:_workspaceData(focused.workspace, afterNames, after),
+        moved = { bundle = focused.bundle, from = focused.workspace, to = target },
+      }
+      self:_present("move", data, 0.7)
+    end, { "move-node-to-workspace", "--window-id", focused.id, target })
+    self.moveTask:start()
   end)
 end
 
