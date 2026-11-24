@@ -10,6 +10,7 @@ spoon.AeroHUD:configure({
   duration = 0.8,
   showAppIcons = true,
   theme = "auto",
+  peekKey = "alt",
 }):start()
 ```
 
@@ -19,6 +20,12 @@ spoon.AeroHUD:configure({
 | `duration` | `0.8` | seconds fully visible |
 | `showAppIcons` | `true` | |
 | `theme` | `"auto"` | `"auto"`, `"dark"`, `"light"` |
+| `peekKey` | `nil` (off) | `"alt"`, `"ctrl"`, `"cmd"`, `"shift"`, `"fn"` |
+| `peekDelay` | `0.3` | seconds the key is held before the HUD appears |
+
+## Peeking
+
+Set `peekKey` to show the HUD while you hold that modifier key on its own. It stays up while the key is down, updates as you switch workspaces, and fades out when you let go. Pressing any other key or clicking while holding it cancels the peek, so shortcuts that use the same modifier don't flash the HUD.
 
 ## Animating window moves
 

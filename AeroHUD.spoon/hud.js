@@ -8,6 +8,8 @@
   let flight = null;     // the running icon animation, if any
   let generation = 0;    // bumped by every show/move so stale callbacks do nothing
   let lastActiveLeft = null;
+  let holding = false;   // the peek key is down: stay up until release()
+  let moving = false;    // a move animation hasn't finished yet
 
   function restart(el, cls) {
     el.classList.remove(cls);
@@ -89,14 +91,16 @@
     return tiles.querySelector(`.tile[data-name="${CSS.escape(name)}"]`);
   }
 
-  function popIn(theme) {
+  function popIn(theme, quick = false) {
     document.body.className = `theme-${theme}`;
+    hud.classList.toggle("quick", quick);
     hud.classList.remove("out");
     if (!hud.classList.contains("in")) restart(hud, "in");
   }
 
   function scheduleOut(ms) {
     clearTimeout(outTimer);
+    if (holding) return;
     outTimer = setTimeout(() => {
       hud.classList.remove("in");
       restart(hud, "out");
@@ -139,6 +143,7 @@
   // Stop any move animation in progress. Returns the new generation number.
   function interrupt() {
     clearTimeout(flightTimer);
+    moving = false;
     if (flight) { flight.cancel(); flight = null; }
     document.querySelectorAll(".flying").forEach(el => el.remove());
     return ++generation;
@@ -147,14 +152,17 @@
   window.hud = {
     show(data) {
       interrupt();
-      renderTiles(data);
-      popIn(data.theme);
+      holding = !!data.hold;
+      renderTiles(data, !data.quick);
+      popIn(data.theme, !!data.quick);
       scheduleOut(data.duration * 1000);
     },
 
     // A window moved: show the old layout, fly the icon, then show the new one.
     move(data) {
       const gen = interrupt();
+      holding = !!data.hold;
+      moving = true;
       const wasVisible = hud.classList.contains("in");
       const before = { ...data.before, showAppIcons: data.showAppIcons };
       const after = { ...data.after, showAppIcons: data.showAppIcons };
@@ -165,10 +173,17 @@
       flightTimer = setTimeout(() => {
         fly(data.moved, before, () => {
           if (gen !== generation) return; // a newer show/move took over
+          moving = false;
           renderTiles(after, false, data.moved.to);
           scheduleOut(data.duration * 1000);
         });
       }, wasVisible ? 0 : 260);
+    },
+
+    // The peek key was released.
+    release() {
+      holding = false;
+      if (!moving) scheduleOut(0);
     },
   };
 })();

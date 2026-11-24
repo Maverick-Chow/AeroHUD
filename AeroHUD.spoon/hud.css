@@ -61,6 +61,11 @@ body {
   animation: pop-in 380ms var(--spring) forwards;
 }
 
+/* Peeking: get on screen fast. */
+.hud.in.quick {
+  animation-duration: 180ms;
+}
+
 .hud.out {
   animation: fade-out 320ms var(--ease-out) forwards;
 }

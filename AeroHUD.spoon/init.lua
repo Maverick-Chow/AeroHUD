@@ -8,7 +8,7 @@ local obj = {}
 obj.__index = obj
 
 obj.name = "AeroHUD"
-obj.version = "0.2.1"
+obj.version = "0.2.2"
 obj.author = "Maverick Chow"
 obj.homepage = "https://github.com/Maverick-Chow/AeroHUD"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
@@ -28,11 +28,15 @@ local defaults = {
   theme = "auto",        -- "auto" | "dark" | "light"
   width = 240,           -- minimum; grows to fit one tile per workspace
   height = 120,
+  peekKey = nil,         -- hold this modifier to show the HUD: "alt" | "ctrl" | "cmd" | "shift" | "fn"
+  peekDelay = 0.3,       -- seconds the key must be held alone before the HUD appears
 }
 
 local TILE_WIDTH = 62    -- tile + gap in hud.css, used to size the window
 
 local SEP = "@@AEROSPACE_HUD@@"
+
+local MOVE_TIME = 0.7    -- extra seconds the HUD stays up for a move animation
 
 -- Quote a string for /bin/sh.
 local function q(s)
@@ -88,8 +92,8 @@ function obj:start()
   wv:url("file://" .. self.spoonPath .. "hud.html")
   self.webview = wv
 
-  -- The page calls back over this controller when its exit animation finishes.
   self.hideTimer = nil
+  if self.opts.peekKey then self:_startPeek() end
   return self
 end
 
@@ -98,6 +102,9 @@ end
 --- Destroy the HUD.
 function obj:stop()
   if self.hideTimer then self.hideTimer:stop() end
+  if self.peekTimer then self.peekTimer:stop() end
+  if self.peekTap then self.peekTap:stop() end
+  self.peekTap, self.peeking = nil, false
   if self.webview then self.webview:delete() end
   self.webview = nil
   return self
@@ -119,6 +126,8 @@ function obj:_query(slot, callback)
     a .. " list-windows --all --format " .. WINDOW_FORMAT,
     "echo " .. SEP,
     a .. " list-windows --focused --format " .. WINDOW_FORMAT .. " 2>/dev/null",
+    "echo " .. SEP,
+    a .. " list-workspaces --focused",
   }, "; ")
   self.tasks = self.tasks or {}
   local old = self.tasks[slot]
@@ -127,7 +136,8 @@ function obj:_query(slot, callback)
     self.tasks[slot] = nil
     local parts = {}
     for part in ((stdout or "") .. SEP):gmatch("(.-)" .. SEP) do parts[#parts + 1] = part end
-    callback(lines(parts[1] or ""), self:_parseWindows(parts[2] or ""), self:_parseWindows(parts[3] or "")[1])
+    callback(lines(parts[1] or ""), self:_parseWindows(parts[2] or ""), self:_parseWindows(parts[3] or "")[1],
+      lines(parts[4] or "")[1])
   end, { "-c", script })
   self.tasks[slot]:start()
 end
@@ -192,6 +202,7 @@ function obj:_present(method, data, extraTime)
   data.theme = self.opts.theme
   data.duration = self.opts.duration
   data.showAppIcons = self.opts.showAppIcons
+  data.hold = self.peeking or false
 
   local wv = self.webview
   local count = #(data.workspaces or data.after.workspaces)
@@ -199,9 +210,108 @@ function obj:_present(method, data, extraTime)
   wv:show()
   wv:evaluateJavaScript("window.hud && window.hud." .. method .. "(" .. hs.json.encode(data) .. ")")
 
-  -- Hide the window after the exit animation so it never blocks clicks.
+  if method == "move" then self.lastMove = hs.timer.secondsSinceEpoch() end
+
+  -- Hide the window after the exit animation so it never blocks clicks. While
+  -- the peek key is held it stays up until the key is released.
   if self.hideTimer then self.hideTimer:stop() end
-  self.hideTimer = hs.timer.doAfter(self.opts.duration + 0.6 + (extraTime or 0), function() wv:hide() end)
+  self.hideTimer = nil
+  if not self.peeking then self:_hideAfter(self.opts.duration + 0.6 + (extraTime or 0)) end
+end
+
+function obj:_hideAfter(seconds)
+  if self.hideTimer then self.hideTimer:stop() end
+  local wv = self.webview
+  self.hideTimer = hs.timer.doAfter(seconds, function() wv:hide() end)
+end
+
+-- Holding the peek key on its own shows the HUD until it is released. Any
+-- other key or click while it is held cancels the peek, so shortcuts that use
+-- the same modifier (alt-1, option-e, ...) don't flash the HUD.
+local function onlyFlag(flags, key)
+  if not flags[key] then return false end
+  for k, v in pairs(flags) do
+    if v and k ~= key and k ~= "capslock" then return false end
+  end
+  return true
+end
+
+function obj:_startPeek()
+  local types = hs.eventtap.event.types
+  local key = self.opts.peekKey
+  self.peekTap = hs.eventtap.new({
+    types.flagsChanged, types.keyDown, types.leftMouseDown, types.rightMouseDown, types.otherMouseDown,
+  }, function(e)
+    if e:getType() == types.flagsChanged then
+      local flags = e:getFlags()
+      if onlyFlag(flags, key) then
+        if not self.peeking and not self.peekArm then self:_armPeek(self.opts.peekDelay) end
+      else
+        self:_cancelPeekTimer()
+        if self.peeking and not flags[key] then self:unpeek() end
+      end
+    else
+      self:_cancelPeekTimer()
+    end
+    return false
+  end)
+  self.peekTap:start()
+end
+
+function obj:_cancelPeekTimer()
+  if self.peekTimer then self.peekTimer:stop() end
+  self.peekTimer, self.peekArm = nil, nil
+end
+
+-- Query aerospace as soon as the key goes down, in parallel with the delay,
+-- and show the HUD once both are done.
+function obj:_armPeek(delay)
+  if not self.webview then self:start() end
+  local arm = { seq = self:_nextSeq() }
+  self.peekArm = arm
+  self:_query("peek", function(names, windows, _, focusedWs)
+    if self.peekArm ~= arm or not focusedWs then return end
+    arm.result = { names = names, windows = windows, ws = focusedWs }
+    self:_firePeek(arm)
+  end)
+  self.peekTimer = hs.timer.doAfter(delay, function()
+    self.peekTimer = nil
+    if self.peekArm ~= arm then return end
+    arm.due = true
+    self:_firePeek(arm)
+  end)
+end
+
+function obj:_firePeek(arm)
+  if not (arm.due and arm.result) then return end
+  self.peekArm = nil
+  self.peeking = true
+  local r = arm.result
+  local data = self:_workspaceData(self:_setFocus(r.ws, arm.seq), r.names, r.windows)
+  data.quick = true
+  self:_present("show", data)
+end
+
+--- AeroHUD:peek()
+--- Method
+--- Show the HUD for the focused workspace and keep it up until `unpeek()`.
+function obj:peek()
+  self:_cancelPeekTimer()
+  self:_armPeek(0)
+end
+
+--- AeroHUD:unpeek()
+--- Method
+--- Hide the HUD shown by `peek()`.
+function obj:unpeek()
+  self:_cancelPeekTimer()
+  if not self.peeking then return end
+  self.peeking = false
+  if not self.webview then return end
+  self.webview:evaluateJavaScript("window.hud && window.hud.release()")
+  -- A move animation still in flight finishes and fades out on its own.
+  local moving = self.lastMove and hs.timer.secondsSinceEpoch() - self.lastMove < MOVE_TIME
+  self:_hideAfter(moving and self.opts.duration + 0.6 + MOVE_TIME or 0.6)
 end
 
 --- AeroHUD:show(workspace, previous)
@@ -256,7 +366,7 @@ function obj:moveWindow(target)
         after = self:_workspaceData(current, afterNames, after),
         moved = { bundle = focused.bundle, from = focused.workspace, to = target },
       }
-      self:_present("move", data, 0.7)
+      self:_present("move", data, MOVE_TIME)
     end, { "move-node-to-workspace", "--window-id", focused.id, target })
     self.moveTasks[seq]:start()
   end)

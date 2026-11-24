@@ -7,4 +7,5 @@ spoon.AeroHUD:configure({
   duration = 0.8,
   showAppIcons = true,
   theme = "auto",
+  peekKey = "alt",     -- hold Option to show the HUD; remove to turn off
 }):start()
