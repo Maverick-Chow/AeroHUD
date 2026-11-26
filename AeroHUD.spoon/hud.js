@@ -180,10 +180,16 @@
       }, wasVisible ? 0 : 260);
     },
 
+    // Fresher data for the HUD already on screen: redraw without animating.
+    refresh(data) {
+      if (moving) return;
+      renderTiles(data, false);
+    },
+
     // The peek key was released.
-    release() {
+    release(linger = 0) {
       holding = false;
-      if (!moving) scheduleOut(0);
+      if (!moving) scheduleOut(linger);
     },
   };
 })();

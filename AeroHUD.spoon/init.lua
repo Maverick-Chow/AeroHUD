@@ -8,7 +8,7 @@ local obj = {}
 obj.__index = obj
 
 obj.name = "AeroHUD"
-obj.version = "0.2.2"
+obj.version = "0.2.3"
 obj.author = "Maverick Chow"
 obj.homepage = "https://github.com/Maverick-Chow/AeroHUD"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
@@ -94,6 +94,8 @@ function obj:start()
 
   self.hideTimer = nil
   if self.opts.peekKey then self:_startPeek() end
+  -- Fill the layout and icon caches so the first switch is instant too.
+  self:_query("warm", function(names, windows) self:_workspaceData(nil, names, windows) end)
   return self
 end
 
@@ -136,10 +138,16 @@ function obj:_query(slot, callback)
     self.tasks[slot] = nil
     local parts = {}
     for part in ((stdout or "") .. SEP):gmatch("(.-)" .. SEP) do parts[#parts + 1] = part end
-    callback(lines(parts[1] or ""), self:_parseWindows(parts[2] or ""), self:_parseWindows(parts[3] or "")[1],
-      lines(parts[4] or "")[1])
+    local names, windows = lines(parts[1] or ""), self:_parseWindows(parts[2] or "")
+    self:_remember(names, windows)
+    callback(names, windows, self:_parseWindows(parts[3] or "")[1], lines(parts[4] or "")[1])
   end, { "-c", script })
   self.tasks[slot]:start()
+end
+
+-- The last known workspaces and windows, drawn instantly on the next switch.
+function obj:_remember(names, windows)
+  self.layout = { names = names, windows = windows, key = hs.json.encode({ names, windows }) }
 end
 
 -- Every show/move gets a sequence number when it is called, so results that
@@ -285,7 +293,7 @@ end
 function obj:_firePeek(arm)
   if not (arm.due and arm.result) then return end
   self.peekArm = nil
-  self.peeking = true
+  self.peeking, self.peekSwitched = true, false
   local r = arm.result
   local data = self:_workspaceData(self:_setFocus(r.ws, arm.seq), r.names, r.windows)
   data.quick = true
@@ -306,12 +314,24 @@ end
 function obj:unpeek()
   self:_cancelPeekTimer()
   if not self.peeking then return end
-  self.peeking = false
+  -- After a switch the HUD lingers as usual; a plain peek goes away at once.
+  local linger = self.peekSwitched and self.opts.duration or 0
+  self.peeking, self.peekSwitched = false, false
   if not self.webview then return end
-  self.webview:evaluateJavaScript("window.hud && window.hud.release()")
+  self.webview:evaluateJavaScript("window.hud && window.hud.release(" .. linger * 1000 .. ")")
   -- A move animation still in flight finishes and fades out on its own.
   local moving = self.lastMove and hs.timer.secondsSinceEpoch() - self.lastMove < MOVE_TIME
-  self:_hideAfter(moving and self.opts.duration + 0.6 + MOVE_TIME or 0.6)
+  self:_hideAfter((moving and self.opts.duration + MOVE_TIME or linger) + 0.6)
+end
+
+-- A switch or move made while the peek key is still down (alt-1 with Option
+-- held) keeps the HUD up until the key is released.
+function obj:_holdIfKeyDown()
+  local key = self.opts.peekKey
+  if key and self.peekTap and hs.eventtap.checkKeyboardModifiers()[key] then
+    self:_cancelPeekTimer()
+    self.peeking, self.peekSwitched = true, true
+  end
 end
 
 --- AeroHUD:show(workspace, previous)
@@ -319,11 +339,25 @@ end
 --- Show the HUD for a workspace switch. Called from AeroSpace's callback.
 function obj:show(ws, prev)
   if not self.webview then self:start() end
-  self:_setFocus(ws, self:_nextSeq())
+  self:_holdIfKeyDown()
+  local seq = self:_nextSeq()
+  self:_setFocus(ws, seq)
+  -- Switching workspaces doesn't move windows, so draw the last known layout
+  -- right away and correct it in place if the fresh query differs.
+  local cached = self.layout
+  if cached and not hs.fnutils.contains(cached.names, ws) then cached = nil end
+  if cached then self:_present("show", self:_workspaceData(ws, cached.names, cached.windows)) end
   self:_query("show", function(names, windows)
+    if cached and hs.json.encode({ names, windows }) == cached.key then return end
+    if self.seq ~= seq then return end -- a newer show/move/peek owns the HUD
     local data = self:_workspaceData(ws, names, windows)
-    data.previous = prev
-    self:_present("show", data)
+    if cached then
+      self.webview:frame(self:_frame(hs.screen.mainScreen(), #data.workspaces))
+      data.showAppIcons = self.opts.showAppIcons
+      self.webview:evaluateJavaScript("window.hud && window.hud.refresh(" .. hs.json.encode(data) .. ")")
+    else
+      self:_present("show", data)
+    end
   end)
 end
 
@@ -334,6 +368,7 @@ end
 --- AeroSpace has no callback for window moves.
 function obj:moveWindow(target)
   if not self.webview then self:start() end
+  self:_holdIfKeyDown()
   target = tostring(target)
   local seq = self:_nextSeq()
   -- Each move gets its own slot so a quick workspace switch can't cancel it.
@@ -357,6 +392,7 @@ function obj:moveWindow(target)
         afterNames = { table.unpack(names) }
         afterNames[#afterNames + 1] = target
       end
+      self:_remember(afterNames, after)
 
       -- If you switched workspaces since pressing the key, keep the highlight
       -- on the workspace you are on now.

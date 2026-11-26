@@ -25,7 +25,7 @@ spoon.AeroHUD:configure({
 
 ## Peeking
 
-Set `peekKey` to show the HUD while you hold that modifier key on its own. It stays up while the key is down, updates as you switch workspaces, and fades out when you let go. Pressing any other key or clicking while holding it cancels the peek, so shortcuts that use the same modifier don't flash the HUD.
+Set `peekKey` to show the HUD while you hold that modifier key on its own. It stays up while the key is down, updates as you switch workspaces, and fades out when you let go. A switch made while the key is held, even a quick alt-1 before the HUD has appeared, also keeps it up until you let go. Pressing any other key or clicking while holding it cancels the peek, so shortcuts that use the same modifier don't flash the HUD.
 
 ## Animating window moves
 
